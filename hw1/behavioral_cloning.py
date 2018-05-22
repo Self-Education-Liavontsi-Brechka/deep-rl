@@ -3,6 +3,7 @@ import numpy as np
 import itertools
 import gym
 import os
+import time
 
 
 def parse_args():
@@ -77,7 +78,7 @@ def build_target_policy(env, summary_writer=None):
 def clone_behaviour(session, env, expert_policy, num_episodes=10,
                     max_timesteps=None, summary_dir=None, render=None):
     if summary_dir:
-        summary_dir = os.path.abspath("./{}/{}".format(summary_dir, env.spec.id))
+        summary_dir = os.path.abspath("./{}/{}/{}".format(summary_dir, env.spec.id, time.strftime("%Y-%m-%d-%H-%M-%S")))
         if not os.path.exists(summary_dir):
             os.makedirs(summary_dir)
 
@@ -100,7 +101,8 @@ def clone_behaviour(session, env, expert_policy, num_episodes=10,
 
             o = np.expand_dims(o_prime, 0)
 
-            print('\rEpisode {}/{}: step {}'.format(i_episode + 1, num_episodes, t), end='')
+            if t % max(1, max_timesteps // 10) == 0:
+                print('\rEpisode {}/{}: step {}'.format(i_episode + 1, num_episodes, t), end='')
 
             if render:
                 env.render()
