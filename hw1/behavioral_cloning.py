@@ -79,7 +79,8 @@ def build_target_policy(env):
 
 def create_summary_writer(session, env, summary_dir=None):
     if summary_dir:
-        summary_dir = os.path.abspath("./{}/{}/{}".format(summary_dir, env.spec.id, time.strftime("%Y-%m-%d-%H-%M-%S")))
+        summary_dir = os.path.abspath("./summaries/{}/{}".format(env.spec.id, time.strftime("%Y-%m-%d-%H-%M-%S") + '-' +
+                                                                 summary_dir))
         if not os.path.exists(summary_dir):
             os.makedirs(summary_dir)
 
