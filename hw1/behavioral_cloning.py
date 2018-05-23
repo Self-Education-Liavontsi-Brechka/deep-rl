@@ -15,6 +15,8 @@ def parse_args():
     parser.add_argument("--max_timesteps", type=int)
     parser.add_argument('--num_rollouts', type=int, default=20,
                         help='Number of expert roll outs')
+    parser.add_argument('--num_test_rollouts', type=int, default=5,
+                        help='Number of test roll outs for target policy')
     parser.add_argument('--summary_dir', type=str, help='Direction to write summaries')
     return parser.parse_args()
 
@@ -33,20 +35,24 @@ def load_expert_policy(args):
 def build_target_policy(env):
     global_step = tf.Variable(0, name='global_step', trainable=False)
 
-    layer1_units = 64
-    layer2_units = 64
+    layer1_units = 512
+    layer2_units = 256
+    layer3_units = 128
+    layer4_units = 128
 
     # ----------------------- PREDICT PART ------------------------
     with tf.name_scope('prediction'):
-        observation_input = tf.placeholder(tf.float32, [None, env.observation_space.shape[0]], 'observation-input')
+        observation_input = tf.placeholder(tf.float32, [None, env.observation_space.shape[0]], 'observation_input')
 
-        current_activations = tf.layers.dense(observation_input, layer1_units, tf.nn.tanh, name='hidden-layer-1')
-        current_activations = tf.layers.dense(current_activations, layer2_units, tf.nn.tanh, name='hidden-layer-2')
-        action_output = tf.layers.dense(current_activations, env.action_space.shape[0], name='action-output')
+        current_activations = tf.layers.dense(observation_input, layer1_units, tf.nn.tanh, name='hidden_layer_1')
+        current_activations = tf.layers.dense(current_activations, layer2_units, tf.nn.tanh, name='hidden_layer_2')
+        current_activations = tf.layers.dense(current_activations, layer3_units, tf.nn.tanh, name='hidden_layer_3')
+        current_activations = tf.layers.dense(current_activations, layer4_units, tf.nn.tanh, name='hidden_layer_4')
+        action_output = tf.layers.dense(current_activations, env.action_space.shape[0], name='action_output')
 
     # ----------------------- TRAIN PART --------------------------
     with tf.name_scope('training'):
-        label_input = tf.placeholder(tf.float32, [None, env.action_space.shape[0]], 'label-input')
+        label_input = tf.placeholder(tf.float32, [None, env.action_space.shape[0]], 'label_input')
 
         loss = tf.losses.mean_squared_error(label_input, action_output)
         optimizer = tf.train.AdamOptimizer()
@@ -85,9 +91,11 @@ def clone_behaviour(session, env, expert_policy, num_episodes=10, max_timesteps=
     session.run(tf.global_variables_initializer())
 
     max_timesteps = max_timesteps or env.spec.timestep_limit
+    rewards = []
 
     for i_episode in range(num_episodes):
         losses = []
+        total_reward = 0.0
 
         o = np.expand_dims(env.reset(), 0)
         for t in itertools.count():
@@ -95,6 +103,7 @@ def clone_behaviour(session, env, expert_policy, num_episodes=10, max_timesteps=
             o_prime, reward, done, _ = env.step(expert_policy_action)
 
             losses.append(update_target_policy(session, o, np.array(expert_policy_action)))
+            total_reward += reward
 
             o = np.expand_dims(o_prime, 0)
 
@@ -106,16 +115,55 @@ def clone_behaviour(session, env, expert_policy, num_episodes=10, max_timesteps=
             if done or t >= max_timesteps:
                 break
 
-        average_loss = np.mean(losses)
+        rewards.append(total_reward)
+        loss_mean = np.mean(losses)
 
         if summary_writer:
             summary = tf.Summary()
-            summary.value.add(simple_value=average_loss, tag='episode/loss')
+            summary.value.add(simple_value=loss_mean, tag='episode/loss_mean')
             summary_writer.add_summary(summary, i_episode)
 
-        print('\nAverage loss for the episode: {}'.format(average_loss))
+        print('\nAverage loss for the episode: {}'.format(loss_mean))
+
+    rewards_mean = np.mean(rewards)
+    rewards_deviation = np.sqrt(np.mean((rewards - rewards_mean) ** 2))
+    print('Expert Rewards Mean: {}, Expert Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
 
     return target_policy
+
+
+def test_target_policy(session, env, target_policy, num_episodes=5, max_timesteps=None, render=None):
+    print('Testing target policy: ')
+
+    max_timesteps = max_timesteps or env.spec.timestep_limit
+    rewards = []
+
+    for i_episode in range(num_episodes):
+        total_reward = 0.0
+
+        o = np.expand_dims(env.reset(), 0)
+        for t in itertools.count():
+            a = target_policy(session, o)
+            o_prime, reward, done, _ = env.step(a)
+
+            total_reward += reward
+            o = np.expand_dims(o_prime, 0)
+
+            if t % max(1, max_timesteps // 10) == 0:
+                print('\rEpisode {}/{}: step {}'.format(i_episode + 1, num_episodes, t), end='')
+
+            if render:
+                env.render()
+            if done or t >= max_timesteps:
+                break
+
+        rewards.append(total_reward)
+
+        print('\nTotal reward for the episode: {}'.format(total_reward))
+
+    rewards_mean = np.mean(rewards)
+    rewards_deviation = np.sqrt(np.mean((rewards - rewards_mean) ** 2))
+    print('Rewards Mean: {}, Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
 
 
 def main():
@@ -125,9 +173,11 @@ def main():
     env = gym.make(args.envname)
 
     with tf.Session() as session:
-        result_policy = clone_behaviour(session, env, expert_policy, num_episodes=args.num_rollouts,
+        target_policy = clone_behaviour(session, env, expert_policy, num_episodes=args.num_rollouts,
                                         max_timesteps=args.max_timesteps,
                                         summary_dir=args.summary_dir, render=args.render)
+
+        test_target_policy(session, env, target_policy, args.num_test_rollouts, args.max_timesteps, args.render)
 
 
 if __name__ == '__main__':
