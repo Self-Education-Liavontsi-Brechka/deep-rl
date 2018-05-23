@@ -20,6 +20,7 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_epochs', type=int, default=20)
     parser.add_argument('--summary_dir', type=str, help='Direction to write summaries')
+    parser.add_argument('--learning_rate', type=float, default=0.001)
     return parser.parse_args()
 
 
@@ -34,8 +35,11 @@ def load_expert_policy(args):
     return policy_fn
 
 
-def build_target_policy(env):
+def build_target_policy(env, starting_learning_rate=0.001):
     global_step = tf.Variable(0, name='global_step', trainable=False)
+
+    learning_rate_decay_steps = 3000
+    learning_rate_decay_rate = 0.1
 
     layer1_units = 512
     layer2_units = 256
@@ -56,23 +60,30 @@ def build_target_policy(env):
     with tf.name_scope('training'):
         label_input = tf.placeholder(tf.float32, [None, env.action_space.shape[0]], 'label_input')
 
+        learning_rate = tf.train.exponential_decay(starting_learning_rate, global_step, learning_rate_decay_steps,
+                                                   learning_rate_decay_rate, False, 'learning_rate_decay')
+
         loss = tf.losses.mean_squared_error(label_input, action_output)
-        optimizer = tf.train.AdamOptimizer()
-        train_optimization = optimizer.minimize(loss, tf.train.get_global_step())
+        optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+        train_optimization = optimizer.minimize(loss, global_step)
+
+        summaries = tf.summary.merge([
+            tf.summary.scalar('learning_rate', learning_rate),
+        ])
 
     def predict_fn(session, observation):
         return session.run(action_output, {observation_input: observation})
 
     def update_fn(session, observation, label):
-        _, loss_result, global_step = session.run(
-            [train_optimization, loss, tf.train.get_global_step()],
+        summary, _, loss_result, global_step = session.run(
+            [summaries, train_optimization, loss, tf.train.get_global_step()],
             {
                 observation_input: observation,
                 label_input: label
             }
         )
 
-        return loss_result
+        return loss_result, summary, global_step
 
     return predict_fn, update_fn
 
@@ -87,8 +98,8 @@ def create_summary_writer(session, env, summary_dir=None):
     return tf.summary.FileWriter(summary_dir, session.graph) if summary_dir else None
 
 
-def clone_behaviour(session, env, expert_policy, batch_size, num_epochs, num_episodes, max_timesteps=None,
-                    summary_dir=None):
+def clone_behaviour(session, env, expert_policy, batch_size, num_epochs, num_episodes, learning_rate,
+                    max_timesteps=None, summary_dir=None):
     max_timesteps = max_timesteps or env.spec.timestep_limit
     transitions = []
     rewards = []
@@ -118,7 +129,7 @@ def clone_behaviour(session, env, expert_policy, batch_size, num_epochs, num_epi
     rewards_deviation = np.sqrt(np.mean((rewards - rewards_mean) ** 2))
     print('\nExpert Rewards Mean: {}, Expert Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
 
-    target_policy, update_target_policy = build_target_policy(env)
+    target_policy, update_target_policy = build_target_policy(env, learning_rate)
     summary_writer = create_summary_writer(session, env, summary_dir)
 
     session.run(tf.global_variables_initializer())
@@ -135,9 +146,13 @@ def clone_behaviour(session, env, expert_policy, batch_size, num_epochs, num_epi
         while t < T:
             o_batch, a_batch = map(np.array, zip(*transitions[t: min(t + batch_size, T)]))
 
-            losses.append(update_target_policy(session, o_batch, a_batch))
+            loss, summary, global_step = update_target_policy(session, o_batch, a_batch)
+
+            losses.append(loss)
 
             print('\rTimestep {}/{}'.format(t + 1, T), end='')
+            if summary_writer:
+                summary_writer.add_summary(summary, global_step)
 
             t += batch_size
 
@@ -194,9 +209,10 @@ def main():
     env = gym.make(args.envname)
 
     with tf.Session() as session:
-        target_policy = clone_behaviour(session, env, expert_policy, batch_size=args.batch_size,
-                                        num_epochs=args.num_epochs, num_episodes=args.num_episodes,
-                                        max_timesteps=args.max_timesteps, summary_dir=args.summary_dir)
+        target_policy = clone_behaviour(session, env, expert_policy, learning_rate=args.learning_rate,
+                                        batch_size=args.batch_size, num_epochs=args.num_epochs,
+                                        num_episodes=args.num_episodes, max_timesteps=args.max_timesteps,
+                                        summary_dir=args.summary_dir)
 
         test_target_policy(session, env, target_policy, args.num_test_episodes, args.max_timesteps, args.render)
 
