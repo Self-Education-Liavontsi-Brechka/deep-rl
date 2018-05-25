@@ -14,7 +14,7 @@ def parse_args():
     parser.add_argument('envname', type=str)
     parser.add_argument('--expert_data_file', type=str)
     parser.add_argument('--num_expert_episodes', type=int, default=20)
-    parser.add_argument('--num_test_episodes', type=int, default=5)
+    parser.add_argument('--num_test_episodes', type=int, default=20)
     parser.add_argument('--num_epochs', type=int, default=20)
     parser.add_argument("--max_timesteps", type=int)
     parser.add_argument('--learning_rate', type=float, default=0.001)
@@ -25,6 +25,8 @@ def parse_args():
 
 
 def load_expert_data(filename):
+    print('Loading expert data...')
+
     with open(filename, 'rb') as file:
         data = pickle.load(file)
 
