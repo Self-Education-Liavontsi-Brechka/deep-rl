@@ -156,17 +156,23 @@ def clone_behaviour(session, env, batch_size, num_epochs, num_episodes, learning
 
     session.run(tf.global_variables_initializer())
 
-    transitions = np.array(transitions)
+    obs, actions = map(np.array, zip(*transitions))
+    o_mean = np.mean(obs, axis=0)
+    o_std = np.std(obs, axis=0) + 10e-16
+    obs = (obs - np.expand_dims(o_mean, 0)) / np.expand_dims(o_std, 0)
+
+    indicies = np.arange(obs.shape[0])
 
     for i_epoch in range(num_epochs):
         losses = []
 
-        np.random.shuffle(transitions)
+        np.random.shuffle(indicies)
 
         t = 0
-        T = len(transitions)
+        T = obs.shape[0]
         while t < T:
-            o_batch, a_batch = map(np.array, zip(*transitions[t: min(t + batch_size, T)]))
+            o_batch = np.take(obs, indicies[t: min(t + batch_size, T)], axis=0)
+            a_batch = np.take(actions, indicies[t: min(t + batch_size, T)], axis=0)
 
             loss, summary, global_step = update_target_policy(session, o_batch, a_batch)
 
