@@ -12,35 +12,78 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('expert_policy_file', type=str)
     parser.add_argument('envname', type=str)
-    parser.add_argument('--render', action='store_true')
-    parser.add_argument("--max_timesteps", type=int)
-    parser.add_argument('--num_episodes', type=int, default=20,
-                        help='Number of expert roll outs')
-    parser.add_argument('--num_test_episodes', type=int, default=5,
-                        help='Number of test roll outs for target policy')
-    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--expert_data_file', type=str)
+    parser.add_argument('--num_expert_episodes', type=int, default=20)
+    parser.add_argument('--num_test_episodes', type=int, default=5)
     parser.add_argument('--num_epochs', type=int, default=20)
-    parser.add_argument('--summary_dir', type=str, help='Direction to write summaries')
+    parser.add_argument("--max_timesteps", type=int)
     parser.add_argument('--learning_rate', type=float, default=0.001)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--summary_dir', type=str)
+    parser.add_argument('--render', action='store_true')
     return parser.parse_args()
 
 
-def load_expert_policy(args):
+def load_expert_data(filename):
+    with open(filename, 'rb') as file:
+        data = pickle.load(file)
+
+    return data
+
+
+def load_expert_policy(filename):
     import load_policy
 
-    assert args.expert_policy_file and args.expert_policy_file != ''
+    assert filename and filename != ''
     print('loading and building expert policy')
-    policy_fn = load_policy.load_policy(args.expert_policy_file)
+    policy_fn = load_policy.load_policy(filename)
     print('loaded and built')
 
     return policy_fn
 
 
-def load_expert_data(args):
-    with open(args.expert_policy_file, 'rb') as file:
-        data = pickle.load(file)
+def generate_expert_data(env, expert_policy, num_episodes, max_timesteps=None):
+    print('Generating expert data:')
 
-    return data
+    max_timesteps = max_timesteps or env.spec.timestep_limit
+    transitions = []
+    rewards = []
+
+    for i_episode in range(num_episodes):
+        total_reward = 0.0
+
+        o = env.reset()
+        for t in itertools.count():
+            expert_policy_action = np.squeeze(expert_policy(np.expand_dims(o, 0)))
+            o_prime, reward, done, _ = env.step(expert_policy_action)
+
+            transitions.append([o, expert_policy_action])
+
+            total_reward += reward
+            o = o_prime
+
+            if t % max(1, max_timesteps // 10) == 0:
+                print('\rEpisode {}/{}: step {}'.format(i_episode + 1, num_episodes, t), end='')
+
+            if done or t >= max_timesteps:
+                break
+
+        rewards.append(total_reward)
+
+    rewards_mean = np.mean(rewards)
+    rewards_deviation = np.std(rewards)
+    print('\nExpert Rewards Mean: {}, Expert Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
+
+    expert_data_file_path = './experts/data/{}'.format(env.spec.id)
+    expert_data_filename = '{}.pkl.data'.format(time.strftime("%Y-%m-%d-%H-%M-%S"))
+    if not os.path.exists(expert_data_file_path):
+        os.makedirs(expert_data_file_path)
+
+    with open(expert_data_file_path + '/' + expert_data_filename, 'xb') as file:
+        pickle.dump(transitions, file, pickle.HIGHEST_PROTOCOL)
+        print('Expert data is written to {}'.format(expert_data_file_path + '/' + expert_data_filename))
+
+    return transitions
 
 
 def build_target_policy(env, starting_learning_rate=0.001):
@@ -57,6 +100,10 @@ def build_target_policy(env, starting_learning_rate=0.001):
     # ----------------------- PREDICT PART ------------------------
     with tf.name_scope('prediction'):
         observation_input = tf.placeholder(tf.float32, [None, env.observation_space.shape[0]], 'observation_input')
+
+        # o_mean = np.mean(obs, axis=0)
+        # o_std = np.std(obs, axis=0) + 10e-16
+        # obs = (obs - np.expand_dims(o_mean, 0)) / np.expand_dims(o_std, 0)
 
         current_activations = tf.layers.dense(observation_input, layer1_units, tf.nn.tanh, name='hidden_layer_1')
         current_activations = tf.layers.dense(current_activations, layer2_units, tf.nn.tanh, name='hidden_layer_2')
@@ -79,8 +126,17 @@ def build_target_policy(env, starting_learning_rate=0.001):
             tf.summary.scalar('learning_rate', learning_rate),
         ])
 
-    def predict_fn(session, observation):
-        return session.run(action_output, {observation_input: observation})
+    with tf.name_scope('test'):
+        test_label_input = tf.placeholder(tf.float32, [None, env.action_space.shape[0]], 'test_label_input')
+
+        test_loss = tf.losses.mean_squared_error(test_label_input, action_output)
+
+    def predict_fn(session, observation, test_label=None):
+        if test_label is None:
+            return session.run(action_output, {observation_input: observation})
+        else:
+            return session.run([action_output, test_loss],
+                               {observation_input: observation, test_label_input: test_label})
 
     def update_fn(session, observation, label):
         summary, _, loss_result, global_step = session.run(
@@ -106,61 +162,11 @@ def create_summary_writer(session, env, summary_dir=None):
     return tf.summary.FileWriter(summary_dir, session.graph) if summary_dir else None
 
 
-def clone_behaviour(session, env, batch_size, num_epochs, num_episodes, learning_rate, expert_data=None,
-                    expert_policy=None, max_timesteps=None, summary_dir=None):
-    assert expert_data or expert_policy
+def clone_behaviour(session, target_policy, target_policy_train_fn, expert_data, batch_size=128, num_epochs=20,
+                    summary_writer=None):
+    print('Cloning behaviour:')
 
-    if expert_policy and not expert_data:
-        max_timesteps = max_timesteps or env.spec.timestep_limit
-        transitions = []
-        rewards = []
-
-        for i_episode in range(num_episodes):
-            total_reward = 0.0
-
-            o = env.reset()
-            for t in itertools.count():
-                expert_policy_action = np.squeeze(expert_policy(np.expand_dims(o, 0)))
-                o_prime, reward, done, _ = env.step(expert_policy_action)
-
-                transitions.append([o, expert_policy_action])
-
-                total_reward += reward
-                o = o_prime
-
-                if t % max(1, max_timesteps // 10) == 0:
-                    print('\rEpisode {}/{}: step {}'.format(i_episode + 1, num_episodes, t), end='')
-
-                if done or t >= max_timesteps:
-                    break
-
-            rewards.append(total_reward)
-
-        rewards_mean = np.mean(rewards)
-        rewards_deviation = np.std(rewards)
-        print('\nExpert Rewards Mean: {}, Expert Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
-
-        expert_data_file_path = './experts/data/{}'.format(env.spec.id)
-        expert_data_filename = '{}.pkl.data'.format(time.strftime("%Y-%m-%d-%H-%M-%S"))
-        if not os.path.exists(expert_data_file_path):
-            os.makedirs(expert_data_file_path)
-
-        with open(expert_data_file_path + '/' + expert_data_filename, 'xb') as file:
-            pickle.dump(transitions, file, pickle.HIGHEST_PROTOCOL)
-            print('Expert data is written to {}'.format(expert_data_file_path + '/' + expert_data_filename))
-    else:
-        transitions = expert_data
-
-    target_policy, update_target_policy = build_target_policy(env, learning_rate)
-    summary_writer = create_summary_writer(session, env, summary_dir)
-
-    session.run(tf.global_variables_initializer())
-
-    obs, actions = map(np.array, zip(*transitions))
-    o_mean = np.mean(obs, axis=0)
-    o_std = np.std(obs, axis=0) + 10e-16
-    obs = (obs - np.expand_dims(o_mean, 0)) / np.expand_dims(o_std, 0)
-
+    obs, actions = map(np.array, zip(*expert_data))
     indicies = np.arange(obs.shape[0])
 
     for i_epoch in range(num_epochs):
@@ -174,7 +180,7 @@ def clone_behaviour(session, env, batch_size, num_epochs, num_episodes, learning
             o_batch = np.take(obs, indicies[t: min(t + batch_size, T)], axis=0)
             a_batch = np.take(actions, indicies[t: min(t + batch_size, T)], axis=0)
 
-            loss, summary, global_step = update_target_policy(session, o_batch, a_batch)
+            loss, summary, global_step = target_policy_train_fn(session, o_batch, a_batch)
 
             losses.append(loss)
 
@@ -191,26 +197,29 @@ def clone_behaviour(session, env, batch_size, num_epochs, num_episodes, learning
             summary.value.add(simple_value=loss_mean, tag='epoch/loss_mean')
             summary_writer.add_summary(summary, i_epoch)
 
-        print('\nAverage loss for the epoch: {}'.format(loss_mean))
+        print('\rAverage loss for the epoch: {}'.format(loss_mean))
 
     return target_policy
 
 
-def test_target_policy(session, env, target_policy, num_episodes=5, max_timesteps=None, render=None):
-    print('Testing target policy: ')
+def test_target_policy(session, env, target_policy, expert_policy, num_episodes=5, max_timesteps=None, render=None,
+                       summary_writer=None):
+    print('Testing target policy:')
 
     max_timesteps = max_timesteps or env.spec.timestep_limit
     rewards = []
+    losses = []
 
     for i_episode in range(num_episodes):
         total_reward = 0.0
 
         o = np.expand_dims(env.reset(), 0)
         for t in itertools.count():
-            a = target_policy(session, o)
+            a, loss = target_policy(session, o, expert_policy(o))
             o_prime, reward, done, _ = env.step(a)
 
             total_reward += reward
+            losses.append(loss)
             o = np.expand_dims(o_prime, 0)
 
             if t % max(1, max_timesteps // 10) == 0:
@@ -222,34 +231,38 @@ def test_target_policy(session, env, target_policy, num_episodes=5, max_timestep
                 break
 
         rewards.append(total_reward)
+        loss_mean = np.mean(losses)
 
-        print('\nTotal reward for the episode: {}'.format(total_reward))
+        if summary_writer:
+            summary = tf.Summary()
+            summary.value.add(simple_value=loss_mean, tag='episode/test_loss_mean')
+            summary_writer.add_summary(summary, i_episode)
 
     rewards_mean = np.mean(rewards)
     rewards_deviation = np.sqrt(np.mean((rewards - rewards_mean) ** 2))
-    print('Rewards Mean: {}, Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
+    print('\nRewards Mean: {}, Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
 
 
 def main():
     args = parse_args()
-
-    expert_data = None
-    expert_policy = None
-
-    if args.expert_policy_file and args.expert_policy_file.endswith('data'):
-        expert_data = load_expert_data(args)
-    else:
-        expert_policy = load_expert_policy(args)
-
     env = gym.make(args.envname)
+    expert_policy = load_expert_policy(args.expert_policy_file)
 
     with tf.Session() as session:
-        target_policy = clone_behaviour(session, env, expert_policy=expert_policy, expert_data=expert_data,
-                                        learning_rate=args.learning_rate, batch_size=args.batch_size,
-                                        num_epochs=args.num_epochs, num_episodes=args.num_episodes,
-                                        max_timesteps=args.max_timesteps, summary_dir=args.summary_dir)
+        if args.expert_data_file:
+            expert_data = load_expert_data(args.expert_data_file)
+        else:
+            expert_data = generate_expert_data(env, expert_policy, args.num_expert_episodes, args.max_timesteps)
 
-        test_target_policy(session, env, target_policy, args.num_test_episodes, args.max_timesteps, args.render)
+        target_policy, target_policy_train_fn = build_target_policy(env, args.learning_rate)
+        summary_writer = create_summary_writer(session, env, args.summary_dir)
+
+        session.run(tf.global_variables_initializer())
+
+        target_policy = clone_behaviour(session, target_policy, target_policy_train_fn, expert_data, args.batch_size,
+                                        args.num_epochs, summary_writer)
+        test_target_policy(session, env, target_policy, expert_policy, args.num_test_episodes, args.max_timesteps,
+                           args.render, summary_writer)
 
 
 if __name__ == '__main__':
