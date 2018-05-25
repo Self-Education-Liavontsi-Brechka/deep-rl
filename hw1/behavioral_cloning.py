@@ -8,6 +8,7 @@ import pickle
 
 EPSILON = 10e-16
 
+
 def parse_args():
     import argparse
     parser = argparse.ArgumentParser()
@@ -208,7 +209,8 @@ def clone_behaviour(session, target_policy, target_policy_train_fn, expert_data,
     return target_policy, o_mean, o_std
 
 
-def test_target_policy(session, env, target_policy, expert_policy, o_mean, o_std, num_episodes=5, max_timesteps=None, render=None,
+def test_target_policy(session, env, target_policy, expert_policy, o_mean, o_std, num_episodes=5, max_timesteps=None,
+                       render=None,
                        summary_writer=None):
     print('Testing target policy:')
 
@@ -266,9 +268,11 @@ def main():
 
         session.run(tf.global_variables_initializer())
 
-        target_policy, o_mean, o_std = clone_behaviour(session, target_policy, target_policy_train_fn, expert_data, args.batch_size,
-                                        args.num_epochs, summary_writer)
-        test_target_policy(session, env, target_policy, expert_policy, o_mean, o_std, args.num_test_episodes, args.max_timesteps,
+        target_policy, o_mean, o_std = clone_behaviour(session, target_policy, target_policy_train_fn, expert_data,
+                                                       args.batch_size,
+                                                       args.num_epochs, summary_writer)
+        test_target_policy(session, env, target_policy, expert_policy, o_mean, o_std, args.num_test_episodes,
+                           args.max_timesteps,
                            args.render, summary_writer)
 
 
