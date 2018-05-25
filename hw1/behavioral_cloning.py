@@ -46,8 +46,8 @@ def load_expert_data(args):
 def build_target_policy(env, starting_learning_rate=0.001):
     global_step = tf.Variable(0, name='global_step', trainable=False)
 
-    learning_rate_decay_steps = 3000
-    learning_rate_decay_rate = 0.1
+    learning_rate_decay_steps = 10000
+    learning_rate_decay_rate = 0.5
 
     layer1_units = 512
     layer2_units = 256
