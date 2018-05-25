@@ -6,6 +6,7 @@ import os
 import time
 import pickle
 
+EPSILON = 10e-16
 
 def parse_args():
     import argparse
@@ -97,15 +98,14 @@ def build_target_policy(env, starting_learning_rate=0.001):
     layer1_units = 512
     layer2_units = 256
     layer3_units = 128
-    layer4_units = 128
+    layer4_units = 64
 
     # ----------------------- PREDICT PART ------------------------
     with tf.name_scope('prediction'):
         observation_input = tf.placeholder(tf.float32, [None, env.observation_space.shape[0]], 'observation_input')
 
-        # o_mean = np.mean(obs, axis=0)
-        # o_std = np.std(obs, axis=0) + 10e-16
-        # obs = (obs - np.expand_dims(o_mean, 0)) / np.expand_dims(o_std, 0)
+        # o_mean, o_std = tf.nn.moments(observation_input, [0], keep_dims=True)
+        # observation_input = (observation_input - o_mean) / (o_std + EPSILON)
 
         current_activations = tf.layers.dense(observation_input, layer1_units, tf.nn.tanh, name='hidden_layer_1')
         current_activations = tf.layers.dense(current_activations, layer2_units, tf.nn.tanh, name='hidden_layer_2')
@@ -169,6 +169,10 @@ def clone_behaviour(session, target_policy, target_policy_train_fn, expert_data,
     print('Cloning behaviour:')
 
     obs, actions = map(np.array, zip(*expert_data))
+    # temporary way of normalizing
+    o_mean = np.mean(obs, axis=0, keepdims=True)
+    o_std = np.std(obs, axis=0, keepdims=True) + 10e-16
+    obs = (obs - o_mean) / o_std
     indicies = np.arange(obs.shape[0])
 
     for i_epoch in range(num_epochs):
@@ -201,10 +205,10 @@ def clone_behaviour(session, target_policy, target_policy_train_fn, expert_data,
 
         print('\rAverage loss for the epoch: {}'.format(loss_mean))
 
-    return target_policy
+    return target_policy, o_mean, o_std
 
 
-def test_target_policy(session, env, target_policy, expert_policy, num_episodes=5, max_timesteps=None, render=None,
+def test_target_policy(session, env, target_policy, expert_policy, o_mean, o_std, num_episodes=5, max_timesteps=None, render=None,
                        summary_writer=None):
     print('Testing target policy:')
 
@@ -217,7 +221,8 @@ def test_target_policy(session, env, target_policy, expert_policy, num_episodes=
 
         o = np.expand_dims(env.reset(), 0)
         for t in itertools.count():
-            a, loss = target_policy(session, o, expert_policy(o))
+            o_norm = (o - o_mean) / o_std
+            a, loss = target_policy(session, o_norm, expert_policy(o))
             o_prime, reward, done, _ = env.step(a)
 
             total_reward += reward
@@ -261,9 +266,9 @@ def main():
 
         session.run(tf.global_variables_initializer())
 
-        target_policy = clone_behaviour(session, target_policy, target_policy_train_fn, expert_data, args.batch_size,
+        target_policy, o_mean, o_std = clone_behaviour(session, target_policy, target_policy_train_fn, expert_data, args.batch_size,
                                         args.num_epochs, summary_writer)
-        test_target_policy(session, env, target_policy, expert_policy, args.num_test_episodes, args.max_timesteps,
+        test_target_policy(session, env, target_policy, expert_policy, o_mean, o_std, args.num_test_episodes, args.max_timesteps,
                            args.render, summary_writer)
 
 
