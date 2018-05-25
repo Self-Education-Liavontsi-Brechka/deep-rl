@@ -4,6 +4,7 @@ import itertools
 import gym
 import os
 import time
+import pickle
 
 
 def parse_args():
@@ -33,6 +34,13 @@ def load_expert_policy(args):
     print('loaded and built')
 
     return policy_fn
+
+
+def load_expert_data(args):
+    with open(args.expert_policy_file, 'rb') as file:
+        data = pickle.load(file)
+
+    return data
 
 
 def build_target_policy(env, starting_learning_rate=0.001):
@@ -98,36 +106,50 @@ def create_summary_writer(session, env, summary_dir=None):
     return tf.summary.FileWriter(summary_dir, session.graph) if summary_dir else None
 
 
-def clone_behaviour(session, env, expert_policy, batch_size, num_epochs, num_episodes, learning_rate,
-                    max_timesteps=None, summary_dir=None):
-    max_timesteps = max_timesteps or env.spec.timestep_limit
-    transitions = []
-    rewards = []
+def clone_behaviour(session, env, batch_size, num_epochs, num_episodes, learning_rate, expert_data=None,
+                    expert_policy=None, max_timesteps=None, summary_dir=None):
+    assert expert_data or expert_policy
 
-    for i_episode in range(num_episodes):
-        total_reward = 0.0
+    if expert_policy and not expert_data:
+        max_timesteps = max_timesteps or env.spec.timestep_limit
+        transitions = []
+        rewards = []
 
-        o = env.reset()
-        for t in itertools.count():
-            expert_policy_action = np.squeeze(expert_policy(np.expand_dims(o, 0)))
-            o_prime, reward, done, _ = env.step(expert_policy_action)
+        for i_episode in range(num_episodes):
+            total_reward = 0.0
 
-            transitions.append((o, expert_policy_action))
+            o = env.reset()
+            for t in itertools.count():
+                expert_policy_action = np.squeeze(expert_policy(np.expand_dims(o, 0)))
+                o_prime, reward, done, _ = env.step(expert_policy_action)
 
-            total_reward += reward
-            o = o_prime
+                transitions.append([o, expert_policy_action])
 
-            if t % max(1, max_timesteps // 10) == 0:
-                print('\rEpisode {}/{}: step {}'.format(i_episode + 1, num_episodes, t), end='')
+                total_reward += reward
+                o = o_prime
 
-            if done or t >= max_timesteps:
-                break
+                if t % max(1, max_timesteps // 10) == 0:
+                    print('\rEpisode {}/{}: step {}'.format(i_episode + 1, num_episodes, t), end='')
 
-        rewards.append(total_reward)
+                if done or t >= max_timesteps:
+                    break
 
-    rewards_mean = np.mean(rewards)
-    rewards_deviation = np.sqrt(np.mean((rewards - rewards_mean) ** 2))
-    print('\nExpert Rewards Mean: {}, Expert Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
+            rewards.append(total_reward)
+
+        rewards_mean = np.mean(rewards)
+        rewards_deviation = np.std(rewards)
+        print('\nExpert Rewards Mean: {}, Expert Rewards deviation: {}'.format(rewards_mean, rewards_deviation))
+
+        expert_data_file_path = './experts/data/{}'.format(env.spec.id)
+        expert_data_filename = '{}.pkl.data'.format(time.strftime("%Y-%m-%d-%H-%M-%S"))
+        if not os.path.exists(expert_data_file_path):
+            os.makedirs(expert_data_file_path)
+
+        with open(expert_data_file_path + '/' + expert_data_filename, 'xb') as file:
+            pickle.dump(transitions, file, pickle.HIGHEST_PROTOCOL)
+            print('Expert data is written to {}'.format(expert_data_file_path + '/' + expert_data_filename))
+    else:
+        transitions = expert_data
 
     target_policy, update_target_policy = build_target_policy(env, learning_rate)
     summary_writer = create_summary_writer(session, env, summary_dir)
@@ -204,15 +226,22 @@ def test_target_policy(session, env, target_policy, num_episodes=5, max_timestep
 
 def main():
     args = parse_args()
-    expert_policy = load_expert_policy(args)
+
+    expert_data = None
+    expert_policy = None
+
+    if args.expert_policy_file and args.expert_policy_file.endswith('data'):
+        expert_data = load_expert_data(args)
+    else:
+        expert_policy = load_expert_policy(args)
 
     env = gym.make(args.envname)
 
     with tf.Session() as session:
-        target_policy = clone_behaviour(session, env, expert_policy, learning_rate=args.learning_rate,
-                                        batch_size=args.batch_size, num_epochs=args.num_epochs,
-                                        num_episodes=args.num_episodes, max_timesteps=args.max_timesteps,
-                                        summary_dir=args.summary_dir)
+        target_policy = clone_behaviour(session, env, expert_policy=expert_policy, expert_data=expert_data,
+                                        learning_rate=args.learning_rate, batch_size=args.batch_size,
+                                        num_epochs=args.num_epochs, num_episodes=args.num_episodes,
+                                        max_timesteps=args.max_timesteps, summary_dir=args.summary_dir)
 
         test_target_policy(session, env, target_policy, args.num_test_episodes, args.max_timesteps, args.render)
 
