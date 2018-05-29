@@ -35,8 +35,13 @@ def build_mlp(
     # ========================================================================================#
 
     with tf.variable_scope(scope):
-        # YOUR_CODE_HERE
-        pass
+        sy_current_layer = input_placeholder
+        for i_layer in range(n_layers):
+            sy_current_layer = tf.layers.dense(sy_current_layer, size, activation, name='hl_{}'.format(i_layer))
+
+        sy_output_layer = tf.layers.dense(sy_current_layer, output_size, output_activation, name='output_layer')
+
+    return sy_output_layer
 
 
 def pathlength(path):
