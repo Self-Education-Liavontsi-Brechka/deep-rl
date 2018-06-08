@@ -10,6 +10,7 @@ from dqn_utils import *
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
 
+
 def learn(env,
           q_func,
           optimizer_spec,
@@ -75,7 +76,7 @@ def learn(env,
         If not None gradients' norms are clipped to this value.
     """
     assert type(env.observation_space) == gym.spaces.Box
-    assert type(env.action_space)      == gym.spaces.Discrete
+    assert type(env.action_space) == gym.spaces.Discrete
 
     ###############
     # BUILD MODEL #
@@ -91,22 +92,22 @@ def learn(env,
 
     # set up placeholders
     # placeholder for current observation (or state)
-    obs_t_ph              = tf.placeholder(tf.uint8, [None] + list(input_shape))
+    obs_t_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
     # placeholder for current action
-    act_t_ph              = tf.placeholder(tf.int32,   [None])
+    act_t_ph = tf.placeholder(tf.int32, [None])
     # placeholder for current reward
-    rew_t_ph              = tf.placeholder(tf.float32, [None])
+    rew_t_ph = tf.placeholder(tf.float32, [None])
     # placeholder for next observation (or state)
-    obs_tp1_ph            = tf.placeholder(tf.uint8, [None] + list(input_shape))
+    obs_tp1_ph = tf.placeholder(tf.uint8, [None] + list(input_shape))
     # placeholder for end of episode mask
     # this value is 1 if the next state corresponds to the end of an episode,
     # in which case there is no Q-value at the next state; at the end of an
     # episode, only the current state reward contributes to the target, not the
     # next state Q-value (i.e. target is just rew_t_ph, not rew_t_ph + gamma * q_tp1)
-    done_mask_ph          = tf.placeholder(tf.float32, [None])
+    done_mask_ph = tf.placeholder(tf.float32, [None])
 
     # casting to float on GPU ensures lower data transfer times.
-    obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
+    obs_t_float = tf.cast(obs_t_ph, tf.float32) / 255.0
     obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
 
     # Here, you should fill in your own code to compute the Bellman error. This requires
@@ -126,7 +127,7 @@ def learn(env,
     # q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
     # Older versions of TensorFlow may require using "VARIABLES" instead of "GLOBAL_VARIABLES"
     ######
-    
+
     # YOUR CODE HERE
 
     ######
@@ -135,11 +136,11 @@ def learn(env,
     learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
     optimizer = optimizer_spec.constructor(learning_rate=learning_rate, **optimizer_spec.kwargs)
     train_fn = minimize_and_clip(optimizer, total_error,
-                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+                                 var_list=q_func_vars, clip_val=grad_norm_clipping)
 
     # update_target_fn will be called periodically to copy Q network to target Q network
     update_target_fn = []
-    for var, var_target in zip(sorted(q_func_vars,        key=lambda v: v.name),
+    for var, var_target in zip(sorted(q_func_vars, key=lambda v: v.name),
                                sorted(target_q_func_vars, key=lambda v: v.name)):
         update_target_fn.append(var_target.assign(var))
     update_target_fn = tf.group(*update_target_fn)
@@ -152,7 +153,7 @@ def learn(env,
     ###############
     model_initialized = False
     num_param_updates = 0
-    mean_episode_reward      = -float('nan')
+    mean_episode_reward = -float('nan')
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
@@ -193,7 +194,7 @@ def learn(env,
         # might as well be random, since you haven't trained your net...)
 
         #####
-        
+
         # YOUR CODE HERE
 
         #####
@@ -209,44 +210,44 @@ def learn(env,
         if (t > learning_starts and
                 t % learning_freq == 0 and
                 replay_buffer.can_sample(batch_size)):
-            # Here, you should perform training. Training consists of four steps:
-            # 3.a: use the replay buffer to sample a batch of transitions (see the
-            # replay buffer code for function definition, each batch that you sample
-            # should consist of current observations, current actions, rewards,
-            # next observations, and done indicator).
-            # 3.b: initialize the model if it has not been initialized yet; to do
-            # that, call
-            #    initialize_interdependent_variables(session, tf.global_variables(), {
-            #        obs_t_ph: obs_t_batch,
-            #        obs_tp1_ph: obs_tp1_batch,
-            #    })
-            # where obs_t_batch and obs_tp1_batch are the batches of observations at
-            # the current and next time step. The boolean variable model_initialized
-            # indicates whether or not the model has been initialized.
-            # Remember that you have to update the target network too (see 3.d)!
-            # 3.c: train the model. To do this, you'll need to use the train_fn and
-            # total_error ops that were created earlier: total_error is what you
-            # created to compute the total Bellman error in a batch, and train_fn
-            # will actually perform a gradient step and update the network parameters
-            # to reduce total_error. When calling session.run on these you'll need to
-            # populate the following placeholders:
-            # obs_t_ph
-            # act_t_ph
-            # rew_t_ph
-            # obs_tp1_ph
-            # done_mask_ph
-            # (this is needed for computing total_error)
-            # learning_rate -- you can get this from optimizer_spec.lr_schedule.value(t)
-            # (this is needed by the optimizer to choose the learning rate)
-            # 3.d: periodically update the target network by calling
-            # session.run(update_target_fn)
-            # you should update every target_update_freq steps, and you may find the
-            # variable num_param_updates useful for this (it was initialized to 0)
-            #####
-            
-            # YOUR CODE HERE
+        # Here, you should perform training. Training consists of four steps:
+        # 3.a: use the replay buffer to sample a batch of transitions (see the
+        # replay buffer code for function definition, each batch that you sample
+        # should consist of current observations, current actions, rewards,
+        # next observations, and done indicator).
+        # 3.b: initialize the model if it has not been initialized yet; to do
+        # that, call
+        #    initialize_interdependent_variables(session, tf.global_variables(), {
+        #        obs_t_ph: obs_t_batch,
+        #        obs_tp1_ph: obs_tp1_batch,
+        #    })
+        # where obs_t_batch and obs_tp1_batch are the batches of observations at
+        # the current and next time step. The boolean variable model_initialized
+        # indicates whether or not the model has been initialized.
+        # Remember that you have to update the target network too (see 3.d)!
+        # 3.c: train the model. To do this, you'll need to use the train_fn and
+        # total_error ops that were created earlier: total_error is what you
+        # created to compute the total Bellman error in a batch, and train_fn
+        # will actually perform a gradient step and update the network parameters
+        # to reduce total_error. When calling session.run on these you'll need to
+        # populate the following placeholders:
+        # obs_t_ph
+        # act_t_ph
+        # rew_t_ph
+        # obs_tp1_ph
+        # done_mask_ph
+        # (this is needed for computing total_error)
+        # learning_rate -- you can get this from optimizer_spec.lr_schedule.value(t)
+        # (this is needed by the optimizer to choose the learning rate)
+        # 3.d: periodically update the target network by calling
+        # session.run(update_target_fn)
+        # you should update every target_update_freq steps, and you may find the
+        # variable num_param_updates useful for this (it was initialized to 0)
+        #####
 
-            #####
+        # YOUR CODE HERE
+
+        #####
 
         ### 4. Log progress
         episode_rewards = get_wrapper_by_name(env, "Monitor").get_episode_rewards()
