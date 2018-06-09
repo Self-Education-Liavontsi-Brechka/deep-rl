@@ -129,12 +129,22 @@ def learn(env,
     ######
 
     # YOUR CODE HERE
+    q_v = q_func(obs_t_float, num_actions, 'q_func', False)
+    t_v = rew_t_ph + (1. - done_mask_ph) * gamma * \
+          tf.reduce_max(q_func(obs_tp1_float, num_actions, 'target_q_func', False), axis=-1)
+    r_i = tf.expand_dims(tf.range(tf.shape(act_t_ph)[0]), axis=-1)
+    c_i = tf.expand_dims(act_t_ph, axis=-1)
+    indices = tf.concat([r_i, c_i], axis=-1)
+    selected_q_v = tf.gather_nd(q_v, indices)
+    total_error = tf.losses.mean_squared_error(t_v, selected_q_v)
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
 
     ######
 
     # construct optimization op (with gradient clipping)
-    learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
-    optimizer = optimizer_spec.constructor(learning_rate=learning_rate, **optimizer_spec.kwargs)
+    learning_rate_ph = tf.placeholder(tf.float32, (), name="learning_rate")
+    optimizer = optimizer_spec.constructor(learning_rate=learning_rate_ph, **optimizer_spec.kwargs)
     train_fn = minimize_and_clip(optimizer, total_error,
                                  var_list=q_func_vars, clip_val=grad_norm_clipping)
 
@@ -157,6 +167,7 @@ def learn(env,
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
+    possible_actions = np.arange(num_actions)
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -196,6 +207,24 @@ def learn(env,
         #####
 
         # YOUR CODE HERE
+        last_frame_index = replay_buffer.store_frame(last_obs)
+        encoded_last_obs = replay_buffer.encode_recent_observation()
+
+        if model_initialized:
+            best_action = np.argmax(np.squeeze(session.run(q_v, {obs_t_ph: np.expand_dims(encoded_last_obs, 0)})))
+            a_probs = np.full(num_actions, exploration.value(t) / (num_actions - 1.))
+            a_probs[best_action] = 1. - exploration.value(t)
+            action = np.random.choice(possible_actions, p=a_probs)
+        else:
+            action = np.random.choice(possible_actions)
+
+        obs_prime, reward, done, info = env.step(action)
+        replay_buffer.store_effect(last_frame_index, action, reward, done)
+
+        if done:
+            last_obs = env.reset()
+        else:
+            last_obs = obs_prime
 
         #####
 
@@ -210,42 +239,64 @@ def learn(env,
         if (t > learning_starts and
                 t % learning_freq == 0 and
                 replay_buffer.can_sample(batch_size)):
-        # Here, you should perform training. Training consists of four steps:
-        # 3.a: use the replay buffer to sample a batch of transitions (see the
-        # replay buffer code for function definition, each batch that you sample
-        # should consist of current observations, current actions, rewards,
-        # next observations, and done indicator).
-        # 3.b: initialize the model if it has not been initialized yet; to do
-        # that, call
-        #    initialize_interdependent_variables(session, tf.global_variables(), {
-        #        obs_t_ph: obs_t_batch,
-        #        obs_tp1_ph: obs_tp1_batch,
-        #    })
-        # where obs_t_batch and obs_tp1_batch are the batches of observations at
-        # the current and next time step. The boolean variable model_initialized
-        # indicates whether or not the model has been initialized.
-        # Remember that you have to update the target network too (see 3.d)!
-        # 3.c: train the model. To do this, you'll need to use the train_fn and
-        # total_error ops that were created earlier: total_error is what you
-        # created to compute the total Bellman error in a batch, and train_fn
-        # will actually perform a gradient step and update the network parameters
-        # to reduce total_error. When calling session.run on these you'll need to
-        # populate the following placeholders:
-        # obs_t_ph
-        # act_t_ph
-        # rew_t_ph
-        # obs_tp1_ph
-        # done_mask_ph
-        # (this is needed for computing total_error)
-        # learning_rate -- you can get this from optimizer_spec.lr_schedule.value(t)
-        # (this is needed by the optimizer to choose the learning rate)
-        # 3.d: periodically update the target network by calling
-        # session.run(update_target_fn)
-        # you should update every target_update_freq steps, and you may find the
-        # variable num_param_updates useful for this (it was initialized to 0)
-        #####
+            # Here, you should perform training. Training consists of four steps:
+            # 3.a: use the replay buffer to sample a batch of transitions (see the
+            # replay buffer code for function definition, each batch that you sample
+            # should consist of current observations, current actions, rewards,
+            # next observations, and done indicator).
+            # 3.b: initialize the model if it has not been initialized yet; to do
+            # that, call
+            #    initialize_interdependent_variables(session, tf.global_variables(), {
+            #        obs_t_ph: obs_t_batch,
+            #        obs_tp1_ph: obs_tp1_batch,
+            #    })
+            # where obs_t_batch and obs_tp1_batch are the batches of observations at
+            # the current and next time step. The boolean variable model_initialized
+            # indicates whether or not the model has been initialized.
+            # Remember that you have to update the target network too (see 3.d)!
+            # 3.c: train the model. To do this, you'll need to use the train_fn and
+            # total_error ops that were created earlier: total_error is what you
+            # created to compute the total Bellman error in a batch, and train_fn
+            # will actually perform a gradient step and update the network parameters
+            # to reduce total_error. When calling session.run on these you'll need to
+            # populate the following placeholders:
+            # obs_t_ph
+            # act_t_ph
+            # rew_t_ph
+            # obs_tp1_ph
+            # done_mask_ph
+            # (this is needed for computing total_error)
+            # learning_rate -- you can get this from optimizer_spec.lr_schedule.value(t)
+            # (this is needed by the optimizer to choose the learning rate)
+            # 3.d: periodically update the target network by calling
+            # session.run(update_target_fn)
+            # you should update every target_update_freq steps, and you may find the
+            # variable num_param_updates useful for this (it was initialized to 0)
+            #####
 
-        # YOUR CODE HERE
+            # YOUR CODE HERE
+            # 3.a
+            obs_batch, act_batch, rew_batch, next_obs_batch, done_mask = replay_buffer.sample(batch_size)
+
+            # 3.b
+            if not model_initialized:
+                initialize_interdependent_variables(session, tf.global_variables(), {})
+                model_initialized = True
+
+            # 3.c
+            loss, _ = session.run([total_error, train_fn],
+                                  {
+                                      obs_t_ph: obs_batch,
+                                      act_t_ph: act_batch,
+                                      rew_t_ph: rew_batch,
+                                      obs_tp1_ph: next_obs_batch,
+                                      done_mask_ph: done_mask,
+                                      learning_rate_ph: optimizer_spec.lr_schedule.value(t)
+                                  })
+            # 3.d
+            if (t + 1) % target_update_freq == 0:
+                session.run(update_target_fn)
+                num_param_updates += 1
 
         #####
 
