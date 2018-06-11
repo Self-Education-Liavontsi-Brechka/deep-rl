@@ -1,12 +1,10 @@
 import sys
 import gym.spaces
 import itertools
-import numpy as np
-import random
 import tensorflow                as tf
-import tensorflow.contrib.layers as layers
 from collections import namedtuple
 from dqn_utils import *
+from tqdm import tqdm
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
 
@@ -24,7 +22,8 @@ def learn(env,
           learning_freq=4,
           frame_history_len=4,
           target_update_freq=10000,
-          grad_norm_clipping=10):
+          grad_norm_clipping=10,
+          num_timesteps=None):
     """Run Deep Q-learning algorithm.
 
     You can specify your own convnet using q_func.
@@ -130,7 +129,7 @@ def learn(env,
 
     # YOUR CODE HERE
     q_v = q_func(obs_t_float, num_actions, 'q_func', False)
-    t_v = rew_t_ph + (1. - done_mask_ph) * gamma * \
+    t_v = rew_t_ph + (1 - done_mask_ph) * gamma * \
           tf.reduce_max(q_func(obs_tp1_float, num_actions, 'target_q_func', False), axis=-1)
     r_i = tf.expand_dims(tf.range(tf.shape(act_t_ph)[0]), axis=-1)
     c_i = tf.expand_dims(act_t_ph, axis=-1)
@@ -168,6 +167,10 @@ def learn(env,
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
     possible_actions = np.arange(num_actions)
+
+    pbar = None
+    if num_timesteps:
+        pbar = tqdm(total=num_timesteps)
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -294,7 +297,7 @@ def learn(env,
                                       learning_rate_ph: optimizer_spec.lr_schedule.value(t)
                                   })
             # 3.d
-            if (t + 1) % target_update_freq == 0:
+            if t % target_update_freq == 0:
                 session.run(update_target_fn)
                 num_param_updates += 1
 
@@ -314,3 +317,8 @@ def learn(env,
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
             sys.stdout.flush()
+        if t % 500 == 0 and t != 0 and pbar:
+            pbar.update(500)
+
+    if pbar:
+        pbar.close()
