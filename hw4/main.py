@@ -3,13 +3,12 @@ import tensorflow as tf
 import gym
 from dynamics import NNDynamicsModel
 from controllers import MPCcontroller, RandomController
-from cost_functions import cheetah_cost_fn, trajectory_cost_fn
+from cost_functions import cheetah_cost_fn, trajectory_cost_fn, pendulum_cost_fn
 import time
 import logz
 import os
-import copy
-import matplotlib.pyplot as plt
-from cheetah_env import HalfCheetahEnvNew
+import inspect
+import types
 
 
 def sample(env,
@@ -25,21 +24,45 @@ def sample(env,
     """
     paths = []
     """ YOUR CODE HERE """
-    s = env.reset()
+    obs_dim = env.observation_space.shape[0]
+    a_dim = env.action_space.shape[0]
+
+    if verbose:
+        print('Sampling data...')
     for i_path in range(num_paths):
-        path = []
+        if verbose:
+            print('Trajectory {}/{}'.format(i_path + 1, num_paths))
+
+        path = {
+            'observations': np.zeros((horizon, obs_dim)),
+            'actions': np.zeros((horizon, a_dim)),
+            'next_observations': np.zeros((horizon, obs_dim)),
+            'deltas': np.zeros((horizon, obs_dim)),
+            'rewards': np.zeros(horizon)
+        }
+
+        s = env.reset()
 
         for step in range(horizon):
             a = controller.get_action(s)
-            s_prime, reward, done, _ = env.stepa(a)
-            path.append((s, a, s_prime, reward, done))
+            s_prime, reward, done, _ = env.step(a)
+            path['observations'][step] = s
+            path['actions'][step] = a
+            path['next_observations'][step] = s_prime
+            path['deltas'][step] = s_prime - s
+            path['rewards'][step] = reward
 
             if render:
                 env.render()
             if done:
                 break
+            if verbose and (step + 1) % 100 == 0:
+                print('\rStep {}/{}'.format(step + 1, horizon), end='')
 
             s = s_prime
+
+        if verbose:
+            print()
 
         paths.append(path)
 
@@ -58,18 +81,21 @@ def compute_normalization(data):
     """
 
     """ YOUR CODE HERE """
-    deltas = []
+    all_obs = []
+    all_actions = []
+    all_deltas = []
+
     for i_path in data:
-        deltas.append([i_path[i_step + 1] - i_path[i_step] for i_step in range(len(i_path) - 1)])
+        all_obs.append(i_path['observations'])
+        all_actions.append(i_path['actions'])
+        all_deltas.append(i_path['deltas'])
 
-    mean_obs = np.mean(data[:, :, 0])
-    std_obs = np.std(data[:, :, 0])
-    mean_deltas = np.mean(deltas)
-    std_deltas = np.std(deltas)
-    mean_action = np.mean(data[:, :, 1])
-    std_action = np.std(data[:, :, 1])
+    all_obs = np.concatenate(all_obs)
+    all_actions = np.concatenate(all_actions)
+    all_deltas = np.concatenate(all_deltas)
 
-    return mean_obs, std_obs, mean_deltas, std_deltas, mean_action, std_action
+    return np.mean(all_obs), np.std(all_obs), np.mean(all_deltas), np.std(all_deltas), \
+           np.mean(all_actions), np.std(all_actions)
 
 
 def plot_comparison(env, dyn_model):
@@ -78,6 +104,10 @@ def plot_comparison(env, dyn_model):
     """
     """ YOUR CODE HERE """
     pass
+
+
+def get_dynamics_test_loss(env, dyn_model):
+    return dyn_model.get_loss_on_data(sample(env, RandomController(env)))
 
 
 def train(env,
@@ -90,7 +120,7 @@ def train(env,
           batch_size=512,
           num_paths_random=10,
           num_paths_onpol=10,
-          num_simulated_paths=10000,
+          num_simulated_paths=10,
           env_horizon=1000,
           mpc_horizon=15,
           n_layers=2,
@@ -133,6 +163,14 @@ def train(env,
     """
 
     logz.configure_output_dir(logdir)
+
+    # Log experimental parameters
+    args = inspect.getargspec(train)[0]
+    locals_ = locals()
+    params = {k: locals_[k] if (k in locals_ and
+                                not isinstance(locals_[k], types.FunctionType) and
+                                not isinstance(locals_[k], gym.Env)) else None for k in args}
+    logz.save_params(params)
 
     # ========================================================
     # 
@@ -192,14 +230,16 @@ def train(env,
     # Note: You don't need to use a mixing ratio in this assignment for new and old data as described in https://arxiv.org/abs/1708.02596
     # 
     for itr in range(onpol_iters):
+        print('Iteration {}/{}'.format(itr + 1, onpol_iters))
         """ YOUR CODE HERE """
 
-        dyn_model.fit(data)
-        on_policy_data = sample(env, mpc_controller, num_paths_onpol, env_horizon, render)
-        data = np.concatenate((data, on_policy_data), axis=0)
+        dyn_train_loss = dyn_model.fit(data)
+        on_policy_data = sample(env, mpc_controller, num_paths_onpol, env_horizon, render, verbose=True)
+        data = np.concatenate((data, on_policy_data))
 
-        costs = mpc_controller.get_costs()
-        returns = data[:, :, 3]
+        costs = [path_cost(cost_fn, i_path) for i_path in on_policy_data]
+        returns = [np.sum(i_path['rewards']) for i_path in on_policy_data]
+        dyn_test_loss = get_dynamics_test_loss(env, dyn_model)
 
         # LOGGING
         # Statistics for performance of MPC policy using
@@ -215,6 +255,11 @@ def train(env,
         logz.log_tabular('StdReturn', np.std(returns))
         logz.log_tabular('MinimumReturn', np.min(returns))
         logz.log_tabular('MaximumReturn', np.max(returns))
+        # Dynamics network
+        logz.log_tabular('AverageTrainLoss', np.mean(dyn_train_loss))
+        logz.log_tabular('StdTrainLoss', np.std(dyn_train_loss))
+        logz.log_tabular('AverageTestLoss', np.mean(dyn_test_loss))
+        logz.log_tabular('StdTestLoss', np.std(dyn_test_loss))
 
         logz.dump_tabular()
 
@@ -235,7 +280,7 @@ def main():
     # Data collection
     parser.add_argument('--random_paths', '-r', type=int, default=10)
     parser.add_argument('--onpol_paths', '-d', type=int, default=10)
-    parser.add_argument('--simulated_paths', '-sp', type=int, default=1000)
+    parser.add_argument('--simulated_paths', '-sp', type=int, default=10)
     parser.add_argument('--ep_len', '-ep', type=int, default=1000)
     # Neural network architecture args
     parser.add_argument('--n_layers', '-l', type=int, default=2)
@@ -257,9 +302,16 @@ def main():
         os.makedirs(logdir)
 
     # Make env
-    if args.env_name is "HalfCheetah-v1":
+    if args.env_name == "HalfCheetah-v1":
+        # to solve expiration error issue when it's not available
+        from cheetah_env import HalfCheetahEnvNew
         env = HalfCheetahEnvNew()
         cost_fn = cheetah_cost_fn
+    elif args.env_name == 'Pendulum-v0':
+        env = gym.make(args.env_name)
+        env._max_episode_steps = args.ep_len
+        cost_fn = pendulum_cost_fn
+
     train(env=env,
           cost_fn=cost_fn,
           logdir=logdir,
