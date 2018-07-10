@@ -267,7 +267,7 @@ def train(env,
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_name', type=str, default='HalfCheetah-v1')
+    parser.add_argument('--env_name', type=str, default='HalfCheetah-v2')
     # Experiment meta-params
     parser.add_argument('--exp_name', type=str, default='mb_mpc')
     parser.add_argument('--seed', type=int, default=3)
@@ -302,9 +302,10 @@ def main():
         os.makedirs(logdir)
 
     # Make env
-    if args.env_name == "HalfCheetah-v1":
+    if args.env_name == 'HalfCheetah-v2':
         # to solve expiration error issue when it's not available
         from cheetah_env import HalfCheetahEnvNew
+        # env = gym.make(args.env_name)
         env = HalfCheetahEnvNew()
         cost_fn = cheetah_cost_fn
     elif args.env_name == 'Pendulum-v0':
